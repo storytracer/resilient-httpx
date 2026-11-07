@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from contextlib import asynccontextmanager
 
 import httpx
@@ -151,6 +151,7 @@ class AsyncProxyHttpClient:
         blacklist_threshold: int = 3,
         blacklist_ttl: float = 300.0,
         blacklist_ttl_from_retry_after: bool = False,
+        blacklist_on: Collection[int] | None = None,
         fallback_to_direct: bool = False,
         default_pool: str | None = None,
         on_blacklist: Callable[[str, str], None] | None = None,
@@ -189,6 +190,8 @@ class AsyncProxyHttpClient:
         self._blacklist_threshold = blacklist_threshold
         self._blacklist_ttl = blacklist_ttl
         self._ttl_from_retry_after = blacklist_ttl_from_retry_after
+        # statuses that count against the proxy; None: every retried status (a server error then blacklists too)
+        self._blacklist_on = None if blacklist_on is None else frozenset(blacklist_on)
         self._on_blacklist = on_blacklist
         self._on_unblacklist = on_unblacklist
         self._on_request_outcome = on_request_outcome
@@ -425,7 +428,7 @@ class AsyncProxyHttpClient:
                     if response.status_code in self._retry.retry_on:
                         duration = time.monotonic() - started
                         self._emit_outcome(pool_name, proxy, "failed", duration)
-                        if active_pool and proxy:
+                        if active_pool and proxy and self._counts_against_proxy(response):
                             blacklisted = await active_pool.report_failure(
                                 proxy, ttl=self._status_ttl(response)
                             )
@@ -447,6 +450,11 @@ class AsyncProxyHttpClient:
             last = exc.last_attempt.exception()
             self._log.error("max_retries_exceeded", last_error=str(last))
             raise MaxRetriesExceeded(str(last)) from last
+
+    def _counts_against_proxy(self, response: httpx.Response) -> bool:
+        """Whether a retried status is the proxy's fault: with ``blacklist_on``, only its statuses (e.g. 429: a
+        per-IP limit); a server error is then retried through another proxy without blacklisting this one."""
+        return self._blacklist_on is None or response.status_code in self._blacklist_on
 
     def _status_ttl(self, response: httpx.Response) -> float | None:
         """How long a proxy whose response had a retryable status is blacklisted (if this failure blacklists it):
@@ -529,7 +537,7 @@ class AsyncProxyHttpClient:
                             await cm.__aexit__(None, None, None)
                             duration = time.monotonic() - started
                             self._emit_outcome(pool_name, proxy, "failed", duration)
-                            if active_pool and proxy:
+                            if active_pool and proxy and self._counts_against_proxy(response):
                                 blacklisted = await active_pool.report_failure(
                                     proxy, ttl=self._status_ttl(response)
                                 )

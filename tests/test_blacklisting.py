@@ -1,5 +1,5 @@
-"""blacklist_ttl_from_retry_after: a retryable status (e.g. 429) with a Retry-After shorter than blacklist_ttl
-blacklists the proxy for that long; a longer one, none, or the option off keeps blacklist_ttl."""
+"""Blacklisting: blacklist_ttl_from_retry_after (a retryable status, e.g. 429, with a Retry-After shorter than blacklist_ttl
+blacklists the proxy for that long) and blacklist_on (only these retried statuses count against the proxy)."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -81,3 +81,41 @@ def test_the_sync_client_shortens_it_the_same_way():
 def test_retry_after_seconds(value, seconds):
     response = _response(429, value or None)
     assert retry_after_seconds(response) == seconds
+
+
+# ---------------------------------------------------------------- blacklist_on: which statuses count against a proxy
+
+
+async def test_with_blacklist_on_a_server_error_is_retried_without_blacklisting():
+    policy = RetryPolicy(max_attempts=3, min_wait=0, max_wait=0, retry_on=[429, 502, 520])
+    with mock_async([_response(520), _response(502), _response(200)]):
+        async with AsyncProxyHttpClient(proxies=PROXIES, retry=policy, blacklist_threshold=1, blacklist_ttl=3600,
+                                        blacklist_on={429}) as client:
+            assert (await client.get(URL)).status_code == 200
+            assert all(_ttl(client.blacklist_snapshot(), p) is None for p in PROXIES)   # none left out
+
+
+async def test_with_blacklist_on_its_statuses_still_blacklist():
+    with mock_async([_response(429), _response(200)]):
+        async with AsyncProxyHttpClient(proxies=PROXIES, retry=POLICY, blacklist_threshold=1, blacklist_ttl=3600,
+                                        blacklist_on={429}) as client:
+            await client.get(URL)
+            assert _ttl(client.blacklist_snapshot(), PROXIES[0]) == pytest.approx(3600, abs=2)
+
+
+async def test_without_blacklist_on_every_retried_status_blacklists():
+    with mock_async([_response(502), _response(200)]):
+        async with AsyncProxyHttpClient(proxies=PROXIES, retry=POLICY, blacklist_threshold=1,
+                                        blacklist_ttl=3600) as client:
+            await client.get(URL)
+            assert _ttl(client.blacklist_snapshot(), PROXIES[0]) == pytest.approx(3600, abs=2)
+
+
+def test_the_sync_client_keeps_blacklist_on_too():
+    policy = RetryPolicy(max_attempts=2, min_wait=0, max_wait=0, retry_on=[520])
+    with (
+        mock_sync([_response(520), _response(200)]),
+        ProxyHttpClient(proxies=PROXIES, retry=policy, blacklist_threshold=1, blacklist_on={429}) as client,
+    ):
+        assert client.get(URL).status_code == 200
+        assert all(_ttl(client.blacklist_snapshot(), p) is None for p in PROXIES)
