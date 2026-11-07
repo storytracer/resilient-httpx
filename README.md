@@ -109,6 +109,7 @@ Both `ProxyHttpClient` and `AsyncProxyHttpClient` accept the same parameters:
 | `headers` | `dict[str, str] \| None` | `None` | Default headers |
 | `blacklist_threshold` | `int` | `3` | Consecutive failures before blacklisting |
 | `blacklist_ttl` | `float` | `300.0` | Blacklist duration in seconds |
+| `blacklist_ttl_from_retry_after` | `bool` | `False` | A retryable status (e.g. 429) with a `Retry-After` shorter than `blacklist_ttl` blacklists the proxy for that long instead |
 | `fallback_to_direct` | `bool` | `False` | Request without proxy when all are blacklisted |
 
 ## Development

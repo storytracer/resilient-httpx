@@ -10,7 +10,7 @@ import structlog
 from tenacity import RetryError
 
 from resilient_httpx.exceptions import AllProxiesExhausted, MaxRetriesExceeded
-from resilient_httpx.retry import RetryPolicy
+from resilient_httpx.retry import RetryPolicy, retry_after_seconds
 from resilient_httpx.sync_pool import SyncProxyPool
 
 _ALL = "_all"
@@ -33,6 +33,7 @@ class ProxyHttpClient:
         headers: dict[str, str] | None = None,
         blacklist_threshold: int = 3,
         blacklist_ttl: float = 300.0,
+        blacklist_ttl_from_retry_after: bool = False,
         fallback_to_direct: bool = False,
         default_pool: str | None = None,
         on_blacklist: Callable[[str, str], None] | None = None,
@@ -45,6 +46,7 @@ class ProxyHttpClient:
         self._strategy = proxy_strategy
         self._blacklist_threshold = blacklist_threshold
         self._blacklist_ttl = blacklist_ttl
+        self._ttl_from_retry_after = blacklist_ttl_from_retry_after
         self._on_blacklist = on_blacklist
         self._on_unblacklist = on_unblacklist
         self._on_request_outcome = on_request_outcome
@@ -183,6 +185,15 @@ class ProxyHttpClient:
             self._probed = True
             return dead
 
+    def _status_ttl(self, response: httpx.Response) -> float | None:
+        """How long a proxy whose response had a retryable status is blacklisted (if this failure blacklists it):
+        with ``blacklist_ttl_from_retry_after``, the response's ``Retry-After`` when it is shorter than
+        ``blacklist_ttl``; else ``blacklist_ttl`` (None: the pool's)."""
+        if not self._ttl_from_retry_after:
+            return None
+        seconds = retry_after_seconds(response)
+        return None if seconds is None else min(seconds, self._blacklist_ttl)
+
     def _emit_outcome(self, pool_name: str, proxy: str | None, status: str, duration: float) -> None:
         if self._on_request_outcome is None:
             return
@@ -242,7 +253,9 @@ class ProxyHttpClient:
                         duration = time.monotonic() - started
                         self._emit_outcome(pool_name, proxy, "failed", duration)
                         if active_pool and proxy:
-                            blacklisted = active_pool.report_failure(proxy)
+                            blacklisted = active_pool.report_failure(
+                                proxy, ttl=self._status_ttl(response)
+                            )
                             if blacklisted:
                                 self._log.warning(
                                     "proxy_blacklisted", proxy=proxy
@@ -320,7 +333,9 @@ class ProxyHttpClient:
                             duration = time.monotonic() - started
                             self._emit_outcome(pool_name, proxy, "failed", duration)
                             if active_pool and proxy:
-                                blacklisted = active_pool.report_failure(proxy)
+                                blacklisted = active_pool.report_failure(
+                                    proxy, ttl=self._status_ttl(response)
+                                )
                                 if blacklisted:
                                     self._log.warning(
                                         "proxy_blacklisted", proxy=proxy

@@ -87,7 +87,9 @@ class SyncProxyPool:
             self._safe_cb(self._on_unblacklist, p)
         return chosen
 
-    def report_failure(self, proxy: str) -> bool:
+    def report_failure(self, proxy: str, ttl: float | None = None) -> bool:
+        """One more failure of ``proxy``; at the threshold it is blacklisted for ``ttl`` seconds (default the pool's
+        ``blacklist_ttl``). Returns whether it was blacklisted now."""
         blacklisted = False
         with self._lock:
             state = self._state[proxy]
@@ -96,7 +98,7 @@ class SyncProxyPool:
             if state.fail_count >= self._threshold and state.blacklisted_until is None:
                 now = time.monotonic()
                 state.blacklisted_at = now
-                state.blacklisted_until = now + self._ttl
+                state.blacklisted_until = now + (self._ttl if ttl is None else ttl)
                 blacklisted = True
         if blacklisted:
             self._safe_cb(self._on_blacklist, proxy)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 from tenacity import (
@@ -12,6 +14,26 @@ from tenacity import (
     wait_fixed,
     wait_random,
 )
+
+
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    """The seconds a response's ``Retry-After`` header asks for (delta-seconds or an HTTP-date; never below 0), or
+    None without a usable one."""
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
 def _default_retry_on_exception() -> list[type[Exception]]:
