@@ -301,6 +301,16 @@ class AsyncProxyHttpClient:
                 )
         return self._clients[key]
 
+    async def block_proxy(self, proxy: str, ttl: float) -> bool:
+        """Leave ``proxy`` out of every pool that has it for ``ttl`` seconds from now: a block learned
+        elsewhere (another process, an earlier run), so no ``on_blacklist`` callback, and a block that ends later
+        stays. Returns whether any pool's block of it changed."""
+        changed = False
+        for pool in self._pools.values():
+            if proxy in pool._state:
+                changed = await pool.block(proxy, ttl) or changed
+        return changed
+
     def blacklist_snapshot(self) -> dict[str, list[dict]]:
         return {
             name: pool.snapshot()

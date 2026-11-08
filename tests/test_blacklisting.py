@@ -119,3 +119,38 @@ def test_the_sync_client_keeps_blacklist_on_too():
     ):
         assert client.get(URL).status_code == 200
         assert all(_ttl(client.blacklist_snapshot(), p) is None for p in PROXIES)
+
+
+# --- block_proxy: a block learned elsewhere (another process, an earlier run) ---
+
+
+@pytest.mark.asyncio
+async def test_block_proxy_leaves_it_out_without_the_callback():
+    seen = []
+    client = AsyncProxyHttpClient(proxies=PROXIES, retry=POLICY, on_blacklist=lambda pool, p: seen.append(p))
+    assert await client.block_proxy(PROXIES[0], 3600) is True
+    assert seen == [] and 3590 < _ttl(client.blacklist_snapshot(), PROXIES[0]) <= 3600
+    with mock_async([_response(200), _response(200)]) as _:
+        for _ in range(2):
+            await client.get(URL)
+    assert _ttl(client.blacklist_snapshot(), PROXIES[1]) is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_block_proxy_keeps_a_block_that_ends_later():
+    client = AsyncProxyHttpClient(proxies=PROXIES, retry=POLICY)
+    assert await client.block_proxy(PROXIES[0], 7200) is True
+    assert await client.block_proxy(PROXIES[0], 60) is False
+    assert await client.block_proxy(PROXIES[0], 0) is False
+    assert _ttl(client.blacklist_snapshot(), PROXIES[0]) > 7000
+    assert await client.block_proxy(PROXIES[0], 9000) is True
+    await client.aclose()
+
+
+def test_block_proxy_sync():
+    seen = []
+    client = ProxyHttpClient(proxies=PROXIES, retry=POLICY, on_blacklist=lambda pool, p: seen.append(p))
+    assert client.block_proxy(PROXIES[1], 600) is True and client.block_proxy(PROXIES[1], 60) is False
+    assert seen == [] and 590 < _ttl(client.blacklist_snapshot(), PROXIES[1]) <= 600
+    client.close()

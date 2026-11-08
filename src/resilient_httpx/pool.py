@@ -146,6 +146,24 @@ class HealthPool:
             state.blacklisted_at = None
             state.total_ok += 1
 
+    async def block(self, proxy: str, ttl: float) -> bool:
+        """Leave ``proxy`` out for ``ttl`` seconds from now because of a block learned elsewhere (another
+        process, an earlier run): no ``on_blacklist`` callback, and a block that ends later stays. Returns whether
+        the proxy's block changed."""
+        async with self._lock:
+            return self._block(proxy, ttl)
+
+    def _block(self, proxy: str, ttl: float) -> bool:
+        state = self._state[proxy]
+        now = time.monotonic()
+        until = now + ttl
+        if ttl <= 0 or (state.blacklisted_until is not None and state.blacklisted_until >= until):
+            return False
+        state.fail_count = max(state.fail_count, self._threshold)
+        state.blacklisted_at = now
+        state.blacklisted_until = until
+        return True
+
     async def blacklist(self, proxy: str) -> None:
         """Force-blacklist a proxy (used by probe_on_start). Fires on_blacklist."""
         fired = False

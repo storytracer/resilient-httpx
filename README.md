@@ -113,6 +113,13 @@ Both `ProxyHttpClient` and `AsyncProxyHttpClient` accept the same parameters:
 | `blacklist_ttl_from_retry_after` | `bool` | `False` | A retryable status (e.g. 429) with a `Retry-After` shorter than `blacklist_ttl` blacklists the proxy for that long instead |
 | `fallback_to_direct` | `bool` | `False` | Request without proxy when all are blacklisted |
 
+### Blocks learned elsewhere
+
+`await client.block_proxy(proxy, ttl)` (`client.block_proxy(...)` on the sync client) leaves a proxy out of every pool
+that has it for `ttl` seconds, for a block another process or an earlier run found: `on_blacklist` does not fire, and
+a block that ends later stays. With `on_blacklist` writing blocks somewhere shared and `block_proxy` reading them back,
+several processes share one blacklist.
+
 ## Development
 
 ```bash
