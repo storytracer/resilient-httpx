@@ -10,6 +10,7 @@ import httpx
 import structlog
 from tenacity import RetryError
 
+from resilient_httpx.blocks import BlockRules
 from resilient_httpx.exceptions import AllProxiesExhausted, MaxRetriesExceeded
 from resilient_httpx.pool import HealthPool
 from resilient_httpx.retry import RetryPolicy, retry_after_seconds
@@ -140,7 +141,7 @@ class _RetriableStatusError(Exception):
         super().__init__(f"HTTP {response.status_code}")
 
 
-class AsyncProxyHttpClient:
+class AsyncProxyHttpClient(BlockRules):
     def __init__(
         self,
         proxies: list[str] | dict[str, list[str]] | None = None,
@@ -152,6 +153,9 @@ class AsyncProxyHttpClient:
         blacklist_ttl: float = 300.0,
         blacklist_ttl_from_retry_after: bool = False,
         blacklist_on: Collection[int] | None = None,
+        blacklist_on_exception: Collection[type[BaseException]] | None = None,
+        block_exceptions: Collection[type[BaseException]] = (),
+        blocks_count_as_attempts: bool = True,
         fallback_to_direct: bool = False,
         default_pool: str | None = None,
         on_blacklist: Callable[[str, str], None] | None = None,
@@ -192,6 +196,7 @@ class AsyncProxyHttpClient:
         self._ttl_from_retry_after = blacklist_ttl_from_retry_after
         # statuses that count against the proxy; None: every retried status (a server error then blacklists too)
         self._blacklist_on = None if blacklist_on is None else frozenset(blacklist_on)
+        self._set_block_rules(blacklist_on_exception, block_exceptions, blocks_count_as_attempts)
         self._on_blacklist = on_blacklist
         self._on_unblacklist = on_unblacklist
         self._on_request_outcome = on_request_outcome
@@ -392,6 +397,7 @@ class AsyncProxyHttpClient:
         retrying = self._retry.build_retrying(
             extra_exceptions=[_RetriableStatusError],
         )
+        retrying = self._count_attempts(retrying)
 
         try:
             async for attempt in retrying:
@@ -422,10 +428,11 @@ class AsyncProxyHttpClient:
                     started = time.monotonic()
                     try:
                         response = await client.request(method, url, **call_kwargs)
-                    except tuple(self._retry.retry_on_exception):
+                    except tuple(self._retry.retry_on_exception) as exc:
                         duration = time.monotonic() - started
                         self._emit_outcome(pool_name, proxy, "failed", duration)
-                        if active_pool and proxy:
+                        self._mark_exception(exc, active_pool, proxy)
+                        if active_pool and proxy and self._exception_counts(exc):
                             blacklisted = await active_pool.report_failure(proxy)
                             if blacklisted:
                                 self._log.warning(
@@ -446,7 +453,7 @@ class AsyncProxyHttpClient:
                                 self._log.warning(
                                     "proxy_blacklisted", proxy=proxy
                                 )
-                        raise _RetriableStatusError(response)
+                        raise self._status_error(_RetriableStatusError(response), active_pool, proxy)
 
                     duration = time.monotonic() - started
                     self._emit_outcome(pool_name, proxy, "success", duration)
@@ -495,6 +502,7 @@ class AsyncProxyHttpClient:
         retrying = self._retry.build_retrying(
             extra_exceptions=[_RetriableStatusError],
         )
+        retrying = self._count_attempts(retrying)
 
         open_stream = None
         proxy = None
@@ -530,10 +538,11 @@ class AsyncProxyHttpClient:
                         cm = client.stream(method, url, **call_kwargs)
                         try:
                             response = await cm.__aenter__()
-                        except tuple(self._retry.retry_on_exception):
+                        except tuple(self._retry.retry_on_exception) as exc:
                             duration = time.monotonic() - started
                             self._emit_outcome(pool_name, proxy, "failed", duration)
-                            if active_pool and proxy:
+                            self._mark_exception(exc, active_pool, proxy)
+                            if active_pool and proxy and self._exception_counts(exc):
                                 blacklisted = await active_pool.report_failure(proxy)
                                 if blacklisted:
                                     self._log.warning(
@@ -555,7 +564,7 @@ class AsyncProxyHttpClient:
                                     self._log.warning(
                                         "proxy_blacklisted", proxy=proxy
                                     )
-                            raise _RetriableStatusError(response)
+                            raise self._status_error(_RetriableStatusError(response), active_pool, proxy)
 
                         open_stream = cm
             except AllProxiesExhausted:
@@ -571,7 +580,7 @@ class AsyncProxyHttpClient:
             except Exception as exc:
                 duration = time.monotonic() - started
                 self._emit_outcome(pool_name, proxy, "failed", duration)
-                if active_pool and proxy and isinstance(exc, httpx.HTTPError):
+                if active_pool and proxy and isinstance(exc, httpx.HTTPError) and self._exception_counts(exc):
                     blacklisted = await active_pool.report_failure(proxy)
                     if blacklisted:
                         self._log.warning("proxy_blacklisted", proxy=proxy)

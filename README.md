@@ -111,6 +111,9 @@ Both `ProxyHttpClient` and `AsyncProxyHttpClient` accept the same parameters:
 | `blacklist_ttl` | `float` | `300.0` | Blacklist duration in seconds |
 | `blacklist_on` | `Collection[int] \| None` | `None` | The retried statuses that count against the proxy (e.g. `{429}`); others are retried without blacklisting. `None`: every retried status |
 | `blacklist_ttl_from_retry_after` | `bool` | `False` | A retryable status (e.g. 429) with a `Retry-After` shorter than `blacklist_ttl` blacklists the proxy for that long instead |
+| `blacklist_on_exception` | `Collection[type] \| None` | `None` | The retried exceptions that count against the proxy (e.g. `httpx.ProxyError`, `httpx.ConnectError`); others (a read timeout) are retried through another proxy without blacklisting. `None`: every retried exception |
+| `block_exceptions` | `Collection[type]` | `()` | Retried exceptions that mean the server turned the proxy away (a block page raised as an error); they count against the proxy. They must also be in `retry_on_exception` |
+| `blocks_count_as_attempts` | `bool` | `True` | `False`: a block (a status in `blacklist_on`, an exception in `block_exceptions`, through a proxy) does not use up one of `max_attempts`, and the next proxy is tried without a backoff wait; the pool bounds the blocks |
 | `fallback_to_direct` | `bool` | `False` | Request without proxy when all are blacklisted |
 
 ### Blocks learned elsewhere
